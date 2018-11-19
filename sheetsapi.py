@@ -1,4 +1,3 @@
-from __future__ import print_function
 from googleapiclient.discovery import build
 from httplib2 import Http
 from oauth2client import file, client, tools
@@ -86,7 +85,11 @@ def get_raw():
     return values
 
 
+def fetch():
+    return process(get_raw())
+
+
 if __name__ == '__main__':
-    result = process(get_raw())
+    result = fetch()
     for key in result:
         print(result[key])
