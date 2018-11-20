@@ -1,221 +1,136 @@
 
 """
-Base class for general reddit side operations
-
--dms people on "Active lists" telling them to comment, if they don't it repeats the dm every day for the whole of that reading (3 days iirc)
--dms people on "active lists" reminding them to write their bills(or how many they have left)
--dms people asking them to ask their mqs, 2 for everyone and 6 for spokespersons
--dms MPs telling them there is a vote, but firstly asks seimer to Whip, aye, no, abstain or free vote
-
- mqs require 2 questions,
- bills and motions require 1
-
+Base class for general reddit side operations.
 """
 
 import praw
-from discord.ext import commands
-import rethinkdb as r
 import datetime as dt
 import json
 
+VERSION = "0.3.0"
 
-class RedditBase():
-    def __init__(self, bot):
-        self.bot = bot
-        self.conntask = self.bot.loop.create_task(self.connectToRethinkdb())
-        self.bgtimer = None
-        creds = json.load("reddittoken.json")
+
+def warning_info(problem, details):
+    # todo: should I output this to a file or something?
+    print("\n\nWarning!")
+    print(problem)
+    print("details: {}".format(details))
+    pass
+
+
+def is_voting(submission_name):
+    if len(submission_name) < 7:
+        return False
+    if not(submission_name.startswith('B') or submission_name.startswith('M')):
+        return False
+    try:
+        int(submission_name[1:2])
+    except ValueError:
+        return False
+    else:
+        return True
+
+
+class RedditFetch:
+    def __init__(self, users: list, sheet_data: dict):
+        with open("reddittoken.json", "r") as f:
+            creds = json.load(f)
         my_id = creds["id"]
         secret = creds["secret"]
-        ua = "Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML,"\
-             " like Gecko) Chrome/65.0.3325.183 Safari/537.36 Viv/1.96.1147.55"
+        my_username = creds['username']
+        # ua = "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:63.0)" \
+        #     " Gecko/20100101 Firefox/63.0"
+        ua = 'linux:{}:{} (by /u/{})'.format(my_id, VERSION, my_username)
         self.reddit = praw.Reddit(
           client_id=my_id,
           client_secret=secret,
           user_agent=ua
         )
-        self.parsedDict = None
-        self.posts = None
-        self.users = {}
-
-    def __unload(self):
-        self.bot.loop.create_task(self.conn.close())
-        print('reddit.py unload routine called')
-        if self.bgtimer is not None:
-            self.bgtimer.cancel()
-
-    async def makeUsersDict(self):
-        """
-        Make our users dict.
-        :param:
-        :return:  dict of class Redditor, with keys being the redditor username
-        """
-        users = {}
-        cursor = await r.db('mhoc').table("discord").run(self.conn)
-        while await cursor.fetch_next():
-            c = await cursor.next()
-            print(c)
-            try:
-                reddit = c['reddit']
-            except KeyError:
-                pass
-            else:
-                if c['discord'] is not None:
-                    users[reddit] = Redditor(reddit, str(c['discord']))
         self.users = users
-        return users
+        print(users)
+        self.posts = []
+        self.sheet_data = sheet_data
+        self.unrecognized_users = []
 
-    async def populatePosts(self):
-        reddit = self.reddit
-        subreddit = reddit.subreddit('MHOC')
-
+    def populatePosts(self):
+        subreddit = self.reddit.subreddit('MHOCMP')
         now = dt.datetime.now()
-        threedays = dt.timedelta(days=3)
+        tendays = dt.timedelta(days=10)
 
-        self.posts = {"MQs": [], "BILL": [], "MOTION": []}
-
-        for submission in subreddit.new(limit=60):
-            print(submission.link_flair_text)
-            if submission.link_flair_text in self.posts.keys():
+        for submission in subreddit.new(limit=6):
+            if is_voting(submission.title):
                 print(submission.title)
-                self.posts[submission.link_flair_text].append(submission)
+                self.posts.append(submission)
 
                 created = dt.datetime.fromtimestamp(int(submission.created))
-                print(now - created)
-                if now - created > threedays:
+                # print(now - created)
+                if now - created > tendays:
                     print("too old!")
                     break
 
-    @commands.cooldown(rate=3, per=7)
-    @commands.command()
-    async def update(self, ctx):
-        """
-        Update what the bot thinks about who's been active about what and stuff
-        Basically do everything but output.
-        :param ctx:
-        :return:
-        """
-        await self.collectData()
-        await ctx.send("Data collection successful.")
+    def index(self, username):
+        # returns the index of a username in the username list
+        try:
+            i = self.users.index(username)
+        except ValueError:
+            if username != 'AutoModerator':
+                warning_info("Commenter not found on user list", username)
+                if username not in self.unrecognized_users:
+                    self.unrecognized_users.append(username)
+            return None
+        else:
+            return i
 
-    async def collectData(self):
-        await self.makeUsersDict()
-        await self.populatePosts()
+    def collectData(self):
+        self.populatePosts()
         print(self.posts)
 
-        for key in ['BILL', 'MOTION']:
-            for submission in self.posts[key]:
-                submission.comments.replace_more(limit=10)
-                comments = submission.comments.list()
-                print(len(comments))
+        for submission in self.posts:
+            # Don't truncate the comments
+            submission.comments.replace_more(limit=60)
+            comments = submission.comments.list()
+            print("{} has {} comments".format(submission.title, len(comments)))
 
-                participants = []
-                for comment in comments:
-                    if len(comment.body) > 15:
-                        if comment.author.name in self.users:
-                            participants.append(comment.author.name)
-                    else:
-                        pass
-                for username in self.users:
-                    user = self.users[username]
-                    if key == "BILL":
-                        if username in participants:
-                            user.commentedBills.append(submission)
-                        else:
-                            user.uncommentedBills.append(submission)
-                    elif key == "MOTION":
-                        if username in participants:
-                            user.commentedMotions.append(submission)
-                        else:
-                            user.uncommentedMotions.append(submission)
+            # Get the bill identifier (like B708).
+            bill_id_end = submission.title.find(' ')
+            bill_id = submission.title[:bill_id_end]
+            print('"'+bill_id+'"')
+            # Make sure the bill indentifier is in our list
+            new_bill = False
+            if bill_id not in self.sheet_data.keys():
+                self.sheet_data[bill_id] = [None] * len(self.users)
+                new_bill = True
 
-            # Now do MQs
-            for submission in self.posts["MQs"]:
-                submission.comments.replace_more(limit=10)
-                comments = submission.comments.list()
-                print(len(comments))
+            commenter_names = []
+            for comment in comments:
+                if "aye" in comment.body.lower() \
+                        or "nay" in comment.body.lower() \
+                        or "abstain" in comment.body.lower():
+                    commenter_names.append(comment.author.name)
+                    author_index = self.index(comment.author.name)
+                    if author_index is None:
+                        pass  # already sent a # warning
+                    elif "aye" in comment.body.lower():
+                        self.sheet_data[bill_id][author_index] = 'AYE'
+                    elif "nay" in comment.body.lower():
+                        self.sheet_data[bill_id][author_index] = 'NAY'
+                    elif "abstain" in comment.body.lower():
+                        self.sheet_data[bill_id][author_index] = 'ABS'
 
-                onetime_participants = []
-                twotime_participants = []
-                for comment in comments:
-                    if len(comment.body) > 15:
-                        authorname = comment.author.name
-                        if authorname in self.users:  # something is wrong here
-                            if authorname in onetime_participants:
-                                onetime_participants.remove(authorname)
-                                twotime_participants.append(authorname)
-                            elif authorname not in twotime_participants:  # if the comment thrice, don't screw up
-                                onetime_participants.append(authorname)
-                    else:
-                        pass
-                        # print(comment.body)
-                for username in self.users:
-                    user = self.users[username]
-                    if username in twotime_participants:
-                        user.commentedMQs.append(submission)
-                    elif username in onetime_participants:
-                        user.partiallyCommentedMQs.append(submission)
-                    else:
-                        user.uncommentedMQs.append(submission)
-        print(self.users)
+            for user in self.users:
+                if user not in commenter_names:
+                    user_index = self.index(user)
+                    # Here we assume that anyone with a crossed out name has
+                    #  N/A across their entire row
+                    if self.sheet_data[bill_id][user_index] != 'N/A':
+                        self.sheet_data[bill_id][user_index] = 'DNV'
+            if new_bill:
+                print(self.sheet_data[bill_id])
 
-    @commands.cooldown(rate=3, per=7)
-    @commands.command()
-    async def debugOutputUsers(self, ctx):
-        """
-        Prints the current content of the Users dict onto discord
-        :param ctx:
-        :return:
-        """
-        n = 1
-        message = "self.users:\n\n"
-        for username in self.users:
-            user = self.users[username]
-            if n % 3 == 0:
-                await ctx.send(message)
-                message = "_ _\n\n" + str(user)
-            else:
-                message += "\n" + str(user)
-            n += 1
-        if n % 3 is not 0:
-            await ctx.send(message)
-        await ctx.send("Done.")
-
-
-def setup(bot):
-    bot.add_cog(RedditBase(bot))
-
-
-class Redditor():
-    def __init__(self, redditname, discordid):
-        self.commentedBills = []
-        self.uncommentedBills = []
-        self.commentedMotions = []
-        self.uncommentedMotions = []
-        self.commentedMQs = []
-        self.partiallyCommentedMQs = []
-        self.uncommentedMQs = []
-
-        self.redditname = redditname
-        self.discordid = discordid
-        self.discordmention = "<@{}>".format(discordid)
-
-    def __str__(self):
-        string = "{} aka {}".format(self.redditname, self.discordmention)
-        string += "\n Uncommented bills: {}".format(self.uncommentedBills)
-        string += "\n Uncommented motions: {}".format(self.uncommentedMotions)
-        string += "\n Uncommented MQs: {}".format(self.uncommentedMQs)
-        string += "\n Only one comment on MQs: {}".format(
-            self.partiallyCommentedMQs)
-        string += "\n\n"
-        return string
-
-    def __repr__(self):
-        return str(self)
-
-    def getTotalCommentedPosts(self):
-        return len(self.commentedBills) + len(self.commentedMotions) + len(self.commentedMQs)
-
-    def getTotalUncommentedPosts(self):
-        return len(self.uncommentedBills) + len(self.uncommentedMotions) + len(self.uncommentedMQs) + \
-               len(self.partiallyCommentedMQs)
+    def run(self):
+        self.populatePosts()
+        self.collectData()
+        print('--------\nThese users were not recognized from the sheet:\n')
+        for user in self.unrecognized_users:
+            print(user)
+        return self.sheet_data
