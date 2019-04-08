@@ -15,7 +15,7 @@ BILL_RANGE_NAME = 'C: 10th Term Voting Record!I2:CV'  # Includes bill names
 
 
 def transpose(old):
-    """Assumes rectangular array"""
+    """Assumes rectangular 2d array"""
     return list(map(list, zip(*old)))
 
 
@@ -29,6 +29,8 @@ class SheetsInterfacer:
 
         self.user_list = []
         self.bill_list = []  # just their names, and ordered
+        self.na_users = []  # just their indexes in the user_list
+        # TODO: implement ^^
 
     def get_service(self):
         """Return a Service object, from which you can make requests"""
@@ -54,11 +56,13 @@ class SheetsInterfacer:
         toreturn = {'usernames': [], 'bills': {}}
         for row in data[self.bill_row+1: self.end_row]:
             toreturn['usernames'].append(row[self.username_col])
-            self.user_list.append(row[self.username_col])
+            self.user_list.append(row[self.username_col])  # used for upload
+            if row[self.end_col] == 'N/A':
+                self.na_users.append(self.username_col)
 
         for bill_name in data[self.bill_row][self.bill_col_start:self.end_col]:
             toreturn['bills'][bill_name] = []
-            self.bill_list.append(bill_name)
+            self.bill_list.append(bill_name)  # useful for the upload
 
         for r in range(self.bill_row+1, self.end_row):
             for c in range(self.bill_col_start, self.end_col):
@@ -89,6 +93,7 @@ class SheetsInterfacer:
             if billname is not None and data[billname] is not None:
                 row = data[billname]
                 row.insert(0, billname)
+                # Now insert all the N/A people
                 print(row)
                 raw.append(row)
 
@@ -99,7 +104,6 @@ class SheetsInterfacer:
         # Call the Sheets API
         result = self.get_service().spreadsheets().values().get(
           spreadsheetId=SPREADSHEET_ID, range=EVERYTHING_RANGE_NAME,
-          majorDimension='ROWS'
         ).execute()
         values = result.get('values', [])
 

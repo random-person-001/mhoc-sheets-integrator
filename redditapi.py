@@ -11,11 +11,13 @@ VERSION = "0.3.0"
 
 
 def warning_info(problem, details):
-    # todo: should I output this to a file or something?
     print("\n\nWarning!")
     print(problem)
     print("details: {}".format(details))
-    pass
+    now = dt.datetime.now().utctimetuple()
+    s = "reddit-fetcher-warnings-" (now[0], now[1], now[2]).join("-") + ".txt"
+    with open("logs/"+s, "a") as warnings_file:
+        warnings_file.write((problem, details).join('\n')+'\n')
 
 
 def is_voting(submission_name):
